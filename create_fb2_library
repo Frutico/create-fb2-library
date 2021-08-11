@@ -1,0 +1,162 @@
+#!/bin/bash
+
+export IFS=$'\n'
+
+NUMFILES=1000
+
+# Archivers
+
+RAR=/usr/bin/unrar
+ZIP=/usr/bin/unzip
+
+echo '*.rar' > listarchsuffixes
+echo '*.zip' >> listarchsuffixes
+
+echo '*.fb2' > listbookssuffixes
+echo '*.epub' >> listbookssuffixes
+
+# hash file utility
+
+HASHFUNC=/usr/bin/md5sum
+
+# temp directories
+
+ARCH_DIR=./Archives
+#TMP=/tmp/Temp
+#TMP2=/tmp/Temp2
+TMP=./Temp
+TMP2=./Temp2
+IMPORT=./Books
+OUT=./Output
+
+[[ ${TMP2:0:1} == . ]] && TMP2=$PWD/$TMP2
+
+# ... and files
+
+REMOVED=removed.files
+HASHTABLE=./md5_hash_table
+
+
+[[ -f $HASHTABLE ]] || echo d41d8cd98f00b204e9800998ecf8427e> $HASHTABLE
+
+# aux funcs
+
+create_dir() {
+  if [ -a $1 ]; then 
+    if [ ! -d $1 ]; then
+      echo $1 isn\'t directory
+      exit 2
+    fi
+  else
+    mkdir $1
+  fi
+}
+
+num_to_str() {
+  printf -v $2 "%6.6i" $1
+}
+
+if_executable() {
+  if [ ! -x $1 ]; then
+    echo $1 - No such file
+    exit 3
+  fi
+}
+
+get_archive_name() {
+  in_archive_name="`ls $ARCH_DIR/*.{[zZ][iI][pP],[rR][aA][rR]} 2>/dev/null | head -1`"
+
+  [ "x$in_archive_name" == x ] && return 1
+
+  if [ ! -w "$in_archive_name" ]; then
+    echo Access denied to $in_archive_name
+    return 4
+  fi
+  echo Processing $in_archive_name
+}
+
+if [ ! -d $ARCH_DIR ]; then
+  echo Directory $ARCH_DIR doesn\'t exists
+  exit 1
+fi
+
+create_dir $TMP
+create_dir $IMPORT
+create_dir $OUT
+
+# 1. finish, if there are no more archives in source directory
+
+while get_archive_name; do
+
+# 2. unpack archive, copy imported files to working directory
+#    copy nested archives to source directory. [add uniq prefix to each - hasn't done yet]
+
+
+  case "$in_archive_name" in
+    *.[zZ][iI][pP]) if_executable $ZIP
+                    unzip -B -C -q -j "$in_archive_name" "*.fb2" "*.epub" -d $TMP
+                    unzip -B -C -q -j "$in_archive_name" "*.zip" "*.rar" -d $ARCH_DIR
+                    ;;
+    *.[rR][aA][rR]) if_executable $RAR
+                    unrar e -cl "$in_archive_name" @listbookssuffixes $TMP
+                    unrar e -cl "$in_archive_name" @listarchsuffixes $ARCH_DIR
+                    ;;
+                 *) echo wrong file suffix
+                    exit 5
+                    ;;
+  esac
+
+# 3. delete processed archive
+
+  rm -f "$in_archive_name"
+
+# 4. calculate hash sum in the temp directory. Check for their existance in the hash sum table
+#    If sum already exist, remove file. Add sum to table otherwise/
+# 5. Rename files in the temporary directory and move them to the source catalog.
+
+     [ "$(ls -A $TMP/* 2>/dev/null)" ] && for i in $TMP/* ; do
+     sum=`$HASHFUNC $i | awk '{print $1}'`
+     if grep -q $sum $HASHTABLE; then
+       echo rm $i >> $REMOVED
+       rm $i
+     else
+       suffix=${i##*.}
+       mv $i $IMPORT/${sum}.${suffix}
+       echo $sum >> $HASHTABLE
+     fi
+   done
+
+# 6. Check file number in working directory. If less than predefined, go to s.1
+
+
+# 7. Zip either all or predefined number of files in the working directory, whichever is less.
+#    Put the resulting archive in the output directory.
+
+# 8. Go to step 1
+
+  while (( $(ls $IMPORT | wc -l) >= $NUMFILES )); do
+
+    create_dir $TMP2
+
+    names=`ls $IMPORT | head -${NUMFILES}`
+    pushd .
+    cd $IMPORT
+    mv $names $TMP2
+    popd
+
+    out_file_name=`ls $TMP2 | head -1 | sed 's/\..*$//'`
+    zip -9 -dc -junk-paths $OUT/${out_file_name}.zip $TMP2/*
+    rm -rf $TMP2
+  done
+done
+
+if [ "$(ls -A $IMPORT/* 2>/dev/null)" ]; then
+  out_file_name=`ls $IMPORT | head -1 | sed 's/\..*$//'`
+  zip -9 -dc -junk-paths $OUT/${out_file_name}.zip $IMPORT/*
+  rm -rf $IMPORT
+fi
+
+rm listarchsuffixes
+rm listbookssuffixes
+# rm -rf $TMP
+echo All done
